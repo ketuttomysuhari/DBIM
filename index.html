@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IFC.js 4-Pillars Boilerplate — Geometry • Topology • Semantics • Georeference</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+      "web-ifc": "https://unpkg.com/web-ifc@0.0.47/web-ifc-api.js",
+      "web-ifc-three": "https://unpkg.com/web-ifc-three@0.0.152/esm/index.js",
+      "three-mesh-bvh": "https://unpkg.com/three-mesh-bvh@0.7.2/build/index.module.js",
+      "proj4": "https://unpkg.com/proj4@2.11.0/dist/proj4.js"
+    }
+  }
+  </script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    :root{ --bg:#0e1116; --panel:#111827; --muted:#9ca3af; --accent:#22c55e; --danger:#ef4444; }
+    html,body{height:100%; margin:0; background:#0b0f14; color:#e5e7eb; font:14px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+    .grid{display:grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr; height:100%}
+    header{grid-column:1/3; padding:.6rem 1rem; background:#0f172a; display:flex; gap:.75rem; align-items:center; position:sticky; top:0; z-index:15}
+    header .pill{background:#111827;border:1px solid #1f2937;border-radius:999px; padding:.35rem .7rem; display:inline-flex; gap:.5rem; align-items:center}
+    header input[type=file]{display:none}
+    header label{cursor:pointer}
+    #viewer{position:relative}
+    #ifcCanvas{width:100%; height:100%; display:block; background:var(--bg)}
+    #map{width:100%; height:100%}
+    .panel{position:absolute; right:10px; top:10px; width:330px; max-height:75vh; overflow:auto; background:#0f172a; border:1px solid #1f2937; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.45)}
+    .panel h3{margin:0; font-size:14px; padding:10px 12px; border-bottom:1px solid #1f2937; background:#0b1220}
+    .panel .body{padding:10px 12px; display:grid; gap:.5rem}
+    .row{display:flex; gap:.5rem; align-items:center}
+    .row label{min-width:92px; color:#93a2b7}
+    .tag{display:inline-flex; align-items:center; gap:.35rem; padding:.2rem .5rem; background:#111827; border:1px solid #1f2937; border-radius:6px}
+    button,select,input[type=text]{background:#111827; color:#e5e7eb; border:1px solid #1f2937; border-radius:8px; padding:.45rem .6rem}
+    button:hover{border-color:#334155}
+    .ok{color:#10b981}
+    .warn{color:#f59e0b}
+    .err{color:#ef4444}
+    .tiny{font-size:12px; color:#94a3b8}
+    .sep{height:1px; background:#1f2937; margin:.35rem 0}
+    .kbd{font:600 12px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background:#0b1220; border:1px solid #1f2937; padding:1px 5px; border-radius:6px}
+    .footer{font-size:12px; color:#94a3b8; padding:8px 12px; border-top:1px solid #1f2937}
+  </style>
+</head>
+<body>
+<div class="grid">
+  <header>
+    <div class="pill">
+      <strong>IFC</strong>
+      <label for="ifcFile" class="tag">📁 Load IFC</label>
+      <input id="ifcFile" type="file" accept=".ifc,.ifczip" />
+    </div>
+    <div class="pill">
+      <span>🗺️ Map Basemap:</span>
+      <select id="basemap">
+        <option value="osm">OpenStreetMap</option>
+        <option value="esri">Esri World Imagery (Satellite)</option>
+      </select>
+      <button id="linkCam">Link Camera → Map</button>
+    </div>
+    <div class="pill">
+      <button id="pickA">Pick A</button>
+      <button id="pickB">Pick B</button>
+      <button id="relate">Relate A–B</button>
+      <span id="relLabel" class="tiny"></span>
+    </div>
+    <div class="pill">
+      <button id="flyToMarker">Fly to Marker</button>
+      <span class="tiny">(click object to drop marker)</span>
+    </div>
+  </header>
+  <section id="viewer">
+    <canvas id="ifcCanvas"></canvas>
+    <div class="panel" id="propPanel" hidden>
+      <h3>Properties</h3>
+      <div class="body" id="propBody"></div>
+      <div class="footer tiny">Click an element to inspect. Press <span class="kbd">Esc</span> to clear.</div>
+    </div>
+    <div class="panel" style="left:10px; right:auto;" id="geoPanel">
+      <h3>Georeference</h3>
+      <div class="body">
+        <div class="row"><label>CRS (proj4)</label><input id="projDef" type="text" placeholder="e.g. +proj=utm +zone=49 +south +datum=WGS84 +units=m +no_defs"></div>
+        <div class="row"><label>Eastings</label><input id="east" type="text" value="0"></div>
+        <div class="row"><label>Northings</label><input id="north" type="text" value="0"></div>
+        <div class="row"><label>Height</label><input id="orthH" type="text" value="0"></div>
+        <div class="row"><label>Scale</label><input id="scale" type="text" value="1"></div>
+        <div class="row"><label>X Axis</label><input id="xaxis" type="text" value="1,0"></div>
+        <button id="applyGeo">Apply Georef</button>
+        <div class="tiny" id="geoStatus">Awaiting IFC…</div>
+        <div class="sep"></div>
+        <div class="tiny">If your IFC has <em>IfcProjectedCRS</em> & <em>IfcMapConversion</em>, these fields will try to auto-fill.</div>
+      </div>
+    </div>
+  </section>
+  <section id="map"></section>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { IFCLoader } from 'web-ifc-three';
+import { acceleratedRaycast, MeshBVH } from 'three-mesh-bvh';
+import proj4 from 'proj4';
+
+// ====== THREE setup ======
+const canvas = document.getElementById('ifcCanvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight-48);
+renderer.setClearColor('#0e1116', 1);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, canvas.clientWidth/canvas.clientHeight, 0.1, 10000);
+camera.position.set(16,12,16);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0,3,0);
+controls.update();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x222233, 1.0));
+
+THREE.Mesh.prototype.raycast = acceleratedRaycast; // enable BVH-accelerated raycast
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let currentIntersect = null;
+
+const grid = new THREE.GridHelper(100, 100, 0x233046, 0x1f2937); grid.position.y = 0; scene.add(grid);
+
+// ====== IFC loader ======
+const ifcLoader = new IFCLoader();
+ifcLoader.ifcManager.parser.setupOptionalCategories({});
+
+const modelGroup = new THREE.Group(); scene.add(modelGroup);
+
+// Store semantics
+const SEM_INDEX = new Map(); // guid -> record { id, type, psets, rels }
+const GUID_TO_MESH = new Map();
+let MODEL_ID = null;
+
+// BVH index for quick topology tests
+const BVH_INDEX = new WeakMap();
+
+// ====== Leaflet map ======
+let map, osmLayer, esriLayer, markerLayer;
+function initMap(){
+  map = L.map('map', { zoomControl:true, center:[-7.978,112.631], zoom:15 });
+  osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 20,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+  esriLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 20,
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+  });
+  markerLayer = L.layerGroup().addTo(map);
+}
+
+// Basemap switcher
+const basemapSel = document.getElementById('basemap');
+basemapSel.addEventListener('change', ()=>{
+  if (basemapSel.value === 'osm') { map.addLayer(osmLayer); map.removeLayer(esriLayer); }
+  else { map.addLayer(esriLayer); map.removeLayer(osmLayer); }
+});
+
+// ====== Georeference (proj4 + IfcMapConversion) ======
+let M_LOCAL_TO_CRS = new THREE.Matrix4();
+let CRS_DEF = null; // proj4 string name "LOCAL_CRS"
+
+function setGeorefFromUI(){
+  const projDef = document.getElementById('projDef').value.trim();
+  if (projDef) {
+    proj4.defs('LOCAL_CRS', projDef);
+    CRS_DEF = projDef;
+  }
+  const east = parseFloat(document.getElementById('east').value||'0');
+  const north = parseFloat(document.getElementById('north').value||'0');
+  const h = parseFloat(document.getElementById('orthH').value||'0');
+  const scale = parseFloat(document.getElementById('scale').value||'1');
+  const [ax, ay] = (document.getElementById('xaxis').value||'1,0').split(',').map(Number);
+
+  const R = new THREE.Matrix4();
+  const xAxis = new THREE.Vector3(ax, ay, 0).normalize();
+  const yAxis = new THREE.Vector3(-ay, ax, 0).normalize();
+  const zAxis = new THREE.Vector3(0,0,1);
+  R.makeBasis(xAxis, yAxis, zAxis);
+  const S = new THREE.Matrix4().makeScale(scale, scale, scale);
+  const M = new THREE.Matrix4().multiplyMatrices(R,S);
+  M.setPosition(new THREE.Vector3(east, north, h));
+  M_LOCAL_TO_CRS = M;
+  document.getElementById('geoStatus').textContent = CRS_DEF ? 'Georef set ✓' : 'Georef set (no CRS)';
+}
+
+document.getElementById('applyGeo').addEventListener('click', setGeorefFromUI);
+
+function tryExtractGeorefFromIFC(){
+  // Best-effort: attempt to find IfcProjectedCRS & IfcMapConversion
+  // If not available, UI remains manual.
+  (async()=>{
+    if (!MODEL_ID) return;
+    try {
+      // IFC type numeric codes differ by schema; search by name via getAllItemsOfType fallback:
+      const projCRS = await ifcLoader.ifcManager.getAllItemsOfType(MODEL_ID, ifcLoader.ifcManager.typesIfc.IFCPROJECTEDCRS, true).catch(()=>[]);
+      if (projCRS?.length) {
+        const crs = await ifcLoader.ifcManager.getItemProperties(MODEL_ID, projCRS[0], true);
+        const name = crs?.Name?.value || '';
+        if (name) {
+          document.getElementById('projDef').value = name; // allow full proj4 or EPSG string if provided
+          try { proj4.defs('LOCAL_CRS', name); CRS_DEF = name; } catch {}
+        }
+      }
+      const mapConvIDs = await ifcLoader.ifcManager.getAllItemsOfType(MODEL_ID, ifcLoader.ifcManager.typesIfc.IFCMAPCONVERSION, true).catch(()=>[]);
+      if (mapConvIDs?.length) {
+        const mc = await ifcLoader.ifcManager.getItemProperties(MODEL_ID, mapConvIDs[0], true);
+        const east = mc?.Eastings?.value ?? 0;
+        const north = mc?.Northings?.value ?? 0;
+        const h = mc?.OrthogonalHeight?.value ?? 0;
+        const scale = mc?.Scale?.value ?? 1;
+        const ax = mc?.XAxisAbscissa?.value ?? 1;
+        const ay = mc?.XAxisOrdinate?.value ?? 0;
+        document.getElementById('east').value = east;
+        document.getElementById('north').value = north;
+        document.getElementById('orthH').value = h;
+        document.getElementById('scale').value = scale;
+        document.getElementById('xaxis').value = `${ax},${ay}`;
+        setGeorefFromUI();
+        document.getElementById('geoStatus').textContent = 'Georef auto-filled ✓';
+      } else {
+        document.getElementById('geoStatus').textContent = 'No IfcMapConversion found — set manually.';
+      }
+    } catch (e) {
+      document.getElementById('geoStatus').textContent = 'Georef read failed — set manually.';
+      console.warn(e);
+    }
+  })();
+}
+
+function localToLonLatHeight(vLocal){
+  const v = vLocal.clone().applyMatrix4(M_LOCAL_TO_CRS);
+  if (!CRS_DEF) return { lon: null, lat: null, h: v.z };
+  try { const [lon,lat] = proj4('LOCAL_CRS','WGS84',[v.x, v.y]); return { lon, lat, h: v.z }; }
+  catch { return { lon: null, lat: null, h: v.z }; }
+}
+
+// ====== Semantics indexing ======
+async function indexSemantics(){
+  if (!MODEL_ID) return;
+  const ifc = ifcLoader.ifcManager;
+  // 103090709 ~ IfcProduct in some schemas; safer to walk spatial structure and related elements
+  const products = await ifc.getAllItemsOfType(MODEL_ID, ifc.typesIfc.IFCPRODUCT, true).catch(()=>[]);
+  for (const id of products){
+    try{
+      const props = await ifc.getItemProperties(MODEL_ID, id, true);
+      const guid = props?.GlobalId?.value; if(!guid) continue;
+      const type = props?.__proto__?.constructor?.name || props?.ifcType || 'IfcProduct';
+      const psets = await ifc.getPropertySets(MODEL_ID, id, true).catch(()=>[]);
+      // relations convenience (optional)
+      const rec = { id, guid, type, props, psets };
+      SEM_INDEX.set(guid, rec);
+    }catch{}
+  }
+}
+
+// ====== Load IFC file ======
+const input = document.getElementById('ifcFile');
+input.addEventListener('change', async (e)=>{
+  const file = e.target.files?.[0]; if (!file) return;
+  const url = URL.createObjectURL(file);
+  const model = await ifcLoader.loadAsync(url);
+  MODEL_ID = model.modelID;
+  model.traverse(o=>{
+    if (o.isMesh){
+      // Build BVH once for fast picking & topology
+      o.geometry.boundsTree = new MeshBVH(o.geometry, { lazyGeneration:false });
+      BVH_INDEX.set(o, o.geometry.boundsTree);
+      o.castShadow = o.receiveShadow = true;
+      // Map GUID to mesh
+      const expressIDAttr = o.geometry.attributes.expressID; // if present per-face/tri
+      o.userData.__isIFC = true; // mark
+    }
+  });
+  modelGroup.add(model);
+  tryExtractGeorefFromIFC();
+  await indexSemantics();
+  document.getElementById('propPanel').hidden = false;
+});
+
+// ====== Render loop & resize ======
+function render(){ renderer.render(scene, camera); requestAnimationFrame(render); }
+render();
+window.addEventListener('resize', ()=>{
+  camera.aspect = canvas.clientWidth/canvas.clientHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight-48);
+});
+
+// ====== Picking & property panel ======
+const propBody = document.getElementById('propBody');
+let PICK_A = null, PICK_B = null; // store picked meshes
+const pickBtnA = document.getElementById('pickA');
+const pickBtnB = document.getElementById('pickB');
+const relateBtn = document.getElementById('relate');
+const relLabel = document.getElementById('relLabel');
+
+function meshAtPointer(ev){
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObject(modelGroup, true);
+  return hits[0] || null;
+}
+
+canvas.addEventListener('pointerdown', (ev)=>{
+  const hit = meshAtPointer(ev);
+  if (!hit) return;
+  currentIntersect = hit;
+  const m = hit.object; highlight(m);
+  showPropertiesForMesh(m);
+  dropMarkerAtHit(hit);
+});
+
+document.addEventListener('keydown', (e)=>{
+  if (e.key === 'Escape') { clearHighlight(); propBody.innerHTML = ''; }
+});
+
+function showPropertiesForMesh(mesh){
+  propBody.innerHTML = '';
+  const rows = [];
+  // Attempt to read ExpressID via ifcManager
+  (async()=>{
+    try{
+      const ifc = ifcLoader.ifcManager;
+      const faceIndex = currentIntersect?.faceIndex ?? null;
+      let id = null;
+      if (faceIndex != null) id = ifc.getExpressId(mesh.geometry, faceIndex);
+      if (id == null && mesh.userData.expressID != null) id = mesh.userData.expressID;
+      if (id != null){
+        const p = await ifc.getItemProperties(MODEL_ID, id, true);
+        const guid = p?.GlobalId?.value; const type = p?.ifcType || p?.__proto__?.constructor?.name;
+        rows.push(['GUID', guid]); rows.push(['Type', type]);
+        if (guid && SEM_INDEX.has(guid)){
+          const rec = SEM_INDEX.get(guid);
+          const name = rec?.props?.Name?.value || '';
+          rows.push(['Name', name]);
+          const psets = rec.psets||[];
+          for (const ps of psets){
+            const pName = ps?.Name?.value || 'Pset';
+            const props = (ps?.HasProperties||[]).map(pp=>`${pp?.Name?.value}: ${pp?.NominalValue?.value}`).join(', ');
+            rows.push([pName, props]);
+          }
+        }
+      }
+    }catch(e){ rows.push(['Error','Unable to load properties']); console.warn(e); }
+    rows.forEach(([k,v])=>{
+      const div = document.createElement('div');
+      div.className='row';
+      div.innerHTML = `<label>${k}</label><div class="tiny">${(v??'').toString().replaceAll('<','&lt;')}</div>`;
+      propBody.appendChild(div);
+    });
+  })();
+}
+
+// Simple highlight
+let lastHighlight = null;
+const highlightMat = new THREE.MeshBasicMaterial({ color:0x22c55e, wireframe:true });
+function highlight(mesh){ clearHighlight(); lastHighlight = mesh; mesh.add(new THREE.BoxHelper(mesh, 0x22c55e)); }
+function clearHighlight(){ if (lastHighlight){ lastHighlight.clear(); lastHighlight = null; } }
+
+// ====== Leaflet integration ======
+initMap();
+
+document.getElementById('linkCam').addEventListener('click', ()=>{
+  // Project camera target (0) to lon/lat (best-effort):
+  const world = new THREE.Vector3().copy(controls.target);
+  const {lon,lat} = localToLonLatHeight(world);
+  if (lon!=null && lat!=null) map.flyTo([lat, lon], 18);
+});
+
+function dropMarkerAtHit(hit){
+  const p = hit.point.clone();
+  const { lon, lat, h } = localToLonLatHeight(p);
+  if (lon==null || lat==null){
+    markerLayer.clearLayers();
+    markerLayer.addLayer(L.marker(map.getCenter()).bindPopup('No CRS defined. Set georeference first.'))
+    .openPopup();
+    return;
+  }
+  markerLayer.clearLayers();
+  const m = L.marker([lat, lon]).addTo(markerLayer);
+  m.bindPopup(`<b>Picked point</b><br>Lon: ${lon.toFixed(6)}<br>Lat: ${lat.toFixed(6)}<br>H: ${h.toFixed(2)} m`).openPopup();
+}
+
+// Fly to last marker
+document.getElementById('flyToMarker').addEventListener('click', ()=>{
+  const layers = markerLayer.getLayers(); if(!layers.length) return;
+  const m = layers[0]; map.flyTo(m.getLatLng(), 19);
+});
+
+// ====== Topology utilities (BVH) ======
+function aabbIntersects(meshA, meshB){
+  meshA.geometry.computeBoundingBox(); meshB.geometry.computeBoundingBox();
+  const ba = meshA.geometry.boundingBox.clone().applyMatrix4(meshA.matrixWorld);
+  const bb = meshB.geometry.boundingBox.clone().applyMatrix4(meshB.matrixWorld);
+  return ba.intersectsBox(bb);
+}
+function meshesOverlapBVH(meshA, meshB){
+  let hit=false;
+  MeshBVH.intersectsGeometry(meshA.geometry.boundsTree, meshA.geometry, meshA.matrixWorld,
+                             meshB.geometry.boundsTree, meshB.geometry, meshB.matrixWorld,
+                             ()=>{ hit=true; return true; });
+  return hit;
+}
+function meshesTouchBVH(meshA, meshB){
+  let touch=false, cut=false;
+  MeshBVH.intersectsGeometry(meshA.geometry.boundsTree, meshA.geometry, meshA.matrixWorld,
+                             meshB.geometry.boundsTree, meshB.geometry, meshB.matrixWorld,
+     (triA, triB)=>{
+       const cop = Math.abs(triA.normal.dot(triB.normal))>0.999; if(cop){ touch=true; } else { cut=true; return true; }
+     });
+  return touch && !cut;
+}
+function isInside(meshA, meshB){
+  const box = new THREE.Box3().setFromObject(meshA); const c = box.getCenter(new THREE.Vector3());
+  const dir = new THREE.Vector3(1,0,0);
+  let count=0; const eps=0.01; const offs=[[0,0,0],[0,eps,0],[0,-eps,0],[0,0,eps],[0,0,-eps]];
+  for(const o of offs){
+    const origin = c.clone().add(new THREE.Vector3(0,o[1],o[2]));
+    const rc = new THREE.Raycaster(origin, dir, 0, 1e7);
+    const it = rc.intersectObject(meshB, true); count += it.length;
+  }
+  return (count%2)===1;
+}
+function relate(A,B){
+  if(!A||!B) return 'select A & B';
+  if(!aabbIntersects(A,B)) return 'disjoint';
+  if (meshesOverlapBVH(A,B)) return 'overlap';
+  if (meshesTouchBVH(A,B)) return 'touch';
+  const aInb = isInside(A,B); const bIna = isInside(B,A);
+  if(aInb && !bIna) return 'inside(A,B)';
+  if(bIna && !aInb) return 'inside(B,A)';
+  if(aInb && bIna)  return 'equal/cover';
+  return 'disjoint';
+}
+
+// Pick A / B via last clicked mesh
+pickBtnA.addEventListener('click', ()=>{ if(currentIntersect){ PICK_A = currentIntersect.object; relLabel.textContent = 'A set ✓'; }});
+pickBtnB.addEventListener('click', ()=>{ if(currentIntersect){ PICK_B = currentIntersect.object; relLabel.textContent = 'B set ✓'; }});
+relateBtn.addEventListener('click', ()=>{ const r = relate(PICK_A,PICK_B); relLabel.textContent = r; });
+
+</script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</body>
+</html>
