@@ -1,115 +1,160 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>IFC.js Minimal Viewer — Load & Orbit</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IFC.js Minimal Viewer — Load & Orbit</title>
 
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-      "web-ifc": "https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/",
-      "web-ifc-three/": "https://cdn.jsdelivr.net/npm/web-ifc-three@0.0.152/esm/"
-    }
-  }
-  </script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+      "web-ifc": "https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/",
+      "web-ifc-three/": "https://cdn.jsdelivr.net/npm/web-ifc-three@0.0.152/esm/"
+    }
+  }
+  </script>
 
-  <style>
-    :root{ --bg:#0b0f14; --ui:#0f172a; --ink:#e5e7eb; --muted:#94a3b8; }
-    html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
-    header{position:fixed;inset:0 0 auto 0;display:flex;gap:.6rem;align-items:center;padding:.6rem 1rem;background:var(--ui);border-bottom:1px solid #1f2937;z-index:10}
-    header input[type=file]{display:none}
-    .btn{background:#111827;border:1px solid #1f2937;color:var(--ink);border-radius:10px;padding:.45rem .7rem;cursor:pointer}
-    .btn:hover{border-color:#334155}
-    .hint{color:var(--muted);font-size:12px}
-    #canvasWrap{position:absolute;inset:48px 0 0 0}
-    #ifcCanvas{width:100%;height:100%;display:block;background:#0e1116}
-    #diag{margin-left:auto;font-size:12px;color:var(--muted);white-space:nowrap}
-  </style>
+  <style>
+    :root{ --bg:#0b0f14; --ui:#0f172a; --ink:#e5e7eb; --muted:#94a3b8; }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+    header{position:fixed;inset:0 0 auto 0;display:flex;gap:.6rem;align-items:center;padding:.6rem 1rem;background:var(--ui);border-bottom:1px solid #1f2937;z-index:10}
+    header input[type=file]{display:none}
+    .btn{background:#111827;border:1px solid #1f2937;color:var(--ink);border-radius:10px;padding:.45rem .7rem;cursor:pointer}
+    .btn:hover{border-color:#334155}
+    .hint{color:var(--muted);font-size:12px}
+    #canvasWrap{position:absolute;inset:48px 0 0 0}
+    #ifcCanvas{width:100%;height:100%;display:block;background:#0e1116}
+    #diag{margin-left:auto;font-size:12px;color:var(--muted);white-space:nowrap}
+  </style>
 </head>
 <body>
-  <header>
-    <label for="ifcFile" class="btn">📁 Load IFC / IFCZIP</label>
-    <input id="ifcFile" type="file" accept=".ifc,.ifczip" />
-    <span class="hint">Tip: drag & drop file ke area viewer</span>
-    <span id="diag">IFC.js minimal — ready</span>
-  </header>
-  <div id="canvasWrap"><canvas id="ifcCanvas"></canvas></div>
+  <header>
+    <label for="ifcFile" class="btn">📁 Load IFC / IFCZIP</label>
+    <input id="ifcFile" type="file" accept=".ifc,.ifczip" />
+    <span class="hint">Tip: drag & drop file ke area viewer</span>
+    <span id="diag">IFC.js minimal — ready</span>
+  </header>
+  <div id="canvasWrap"><canvas id="ifcCanvas"></canvas></div>
 
-  <script type="module">
-    import * as THREE from 'three';
-    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-    import { IFCLoader } from 'web-ifc-three/IFCLoader.js';
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { IFCLoader } from 'web-ifc-three/IFCLoader.js';
 
-    const diag = document.getElementById('diag');
-    const canvas = document.getElementById('ifcCanvas');
+    const diag = document.getElementById('diag');
+    const canvas = document.getElementById('ifcCanvas');
 
-    // Renderer & scene
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    renderer.setSize(innerWidth, innerHeight-48);
-    renderer.setClearColor('#0e1116', 1);
+    // --- Three.js Setup (Tidak diubah, sudah benar) ---
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(60, canvas.clientWidth/canvas.clientHeight, 0.1, 100000);
-    camera.position.set(15,10,15);
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0,3,0); controls.update();
+    // Renderer & scene
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight-48);
+    renderer.setClearColor('#0e1116', 1);
 
-    // Light & helpers (very minimal)
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 0.9));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.6); dir.position.set(20,40,20); scene.add(dir);
-    const grid = new THREE.GridHelper(100, 100, 0x233046, 0x1f2937); grid.position.y = 0; scene.add(grid);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, canvas.clientWidth/canvas.clientHeight, 0.1, 100000);
+    camera.position.set(15,10,15);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0,3,0); controls.update();
 
-    // IFC Loader (WASM path MUST end with slash)
-    const ifcLoader = new IFCLoader();
-    ifcLoader.ifcManager.setWasmPath('https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/');
+    // Light & helpers (very minimal)
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 0.9));
+    const dir = new THREE.DirectionalLight(0xffffff, 0x666666, 0.6); dir.position.set(20,40,20); scene.add(dir);
+    const grid = new THREE.GridHelper(100, 100, 0x233046, 0x1f2937); grid.position.y = 0; scene.add(grid);
 
-    const modelGroup = new THREE.Group(); scene.add(modelGroup);
+    // --- IFC Loader Setup ---
+    const ifcLoader = new IFCLoader();
+    // WASM path-nya sudah benar
+    ifcLoader.ifcManager.setWasmPath('https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/');
 
-    function fitToObject(obj){
-      const box = new THREE.Box3().setFromObject(obj);
-      if(box.isEmpty()) return;
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      const maxDim = Math.max(size.x, size.y, size.z);
-      const dist = maxDim * 1.4 / Math.tan((camera.fov * Math.PI) / 360);
-      const dirVec = new THREE.Vector3(1, 0.5, 1).normalize();
-      camera.position.copy(center.clone().add(dirVec.multiplyScalar(dist)));
-      controls.target.copy(center); controls.update();
-    }
+    const modelGroup = new THREE.Group(); scene.add(modelGroup);
 
-    async function loadIFC(url){
-      try{
-        // clear previous
-        while (modelGroup.children.length){ const c = modelGroup.children.pop(); c.traverse(n=>{ n.geometry?.dispose?.(); if(n.material){ (Array.isArray(n.material)?n.material:[n.material]).forEach(m=>m.dispose()); } }); }
-        const model = await ifcLoader.loadAsync(url);
-        modelGroup.add(model);
-        fitToObject(model);
-        diag.textContent = 'Loaded ✓';
-      }catch(err){ console.error(err); diag.textContent = 'Load failed'; alert('Gagal memuat IFC. Cek konsol untuk detail.'); }
-    }
+    // Fungsi untuk fokus kamera (Sudah benar)
+    function fitToObject(obj){
+      const box = new THREE.Box3().setFromObject(obj);
+      if(box.isEmpty()) return;
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const dist = maxDim * 1.4 / Math.tan((camera.fov * Math.PI) / 360);
+      // Menggunakan posisi kamera yang agak ke atas untuk sudut pandang yang lebih baik
+      const dirVec = new THREE.Vector3(1, 1.5, 1).normalize(); // Perbaikan kecil di sini
+      camera.position.copy(center.clone().add(dirVec.multiplyScalar(dist)));
+      controls.target.copy(center); controls.update();
+    }
 
-    // File input
-    document.getElementById('ifcFile').addEventListener('change', async (e)=>{
-      const file = e.target.files?.[0]; if(!file) return;
-      const url = URL.createObjectURL(file);
-      await loadIFC(url);
-    });
+    // PERBAIKAN: Fungsi untuk memuat file IFC sebagai ArrayBuffer (untuk file lokal)
+    async function loadIFC(file){
+      try{
+        diag.textContent = 'Loading...';
 
-    // Drag & drop
-    window.addEventListener('dragover', e=>{ e.preventDefault(); });
-    window.addEventListener('drop', async (e)=>{ e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if(!f) return; const url = URL.createObjectURL(f); await loadIFC(url); });
+        // Clear model sebelumnya
+        while (modelGroup.children.length){ 
+          const c = modelGroup.children.pop(); 
+          c.traverse(n=>{ 
+            n.geometry?.dispose?.(); 
+            if(n.material){ 
+              (Array.isArray(n.material)?n.material:[n.material]).forEach(m=>m.dispose()); 
+            } 
+          }); 
+        }
+        
+        let model;
+        
+        if (file instanceof File) {
+          // Jika berupa objek File (dari input/drag&drop), baca sebagai ArrayBuffer
+          const buffer = await file.arrayBuffer();
+          model = await ifcLoader.parse(buffer); // Gunakan .parse() dengan ArrayBuffer
+        } else if (typeof file === 'string') {
+          // Jika berupa string (untuk auto-load file eksternal), gunakan loadAsync
+          model = await ifcLoader.loadAsync(file);
+        } else {
+          throw new Error("Tipe file tidak didukung.");
+        }
 
-    // Optional: auto-load ./assets/model.ifc if exists
-    fetch('./assets/model.ifc', { method:'HEAD' }).then(r=>{ if(r.ok) loadIFC('./assets/model.ifc'); });
+        modelGroup.add(model);
+        fitToObject(model);
+        diag.textContent = 'Loaded ✓';
+      }catch(err){ 
+        console.error('IFC Load Error:', err); 
+        diag.textContent = 'Load failed'; 
+        alert('Gagal memuat IFC. Cek konsol untuk detail kesalahan.'); 
+      }
+    }
 
-    // Render loop & resize
-    function render(){ renderer.render(scene, camera); requestAnimationFrame(render); }
-    render();
-    window.addEventListener('resize', ()=>{ camera.aspect = canvas.clientWidth/canvas.clientHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight-48); });
-  </script>
+    // File input listener (PERBAIKAN)
+    document.getElementById('ifcFile').addEventListener('change', async (e)=>{
+      const file = e.target.files?.[0]; 
+      if(!file) return;
+      // KIRIM OBJEK FILE BUKAN URL
+      await loadIFC(file);
+      // Reset input agar event 'change' ter-trigger jika file yang sama dimuat lagi
+      e.target.value = null; 
+    });
+
+    // Drag & drop listener (PERBAIKAN)
+    window.addEventListener('dragover', e=>{ e.preventDefault(); });
+    window.addEventListener('drop', async (e)=>{ 
+      e.preventDefault(); 
+      const file = e.dataTransfer?.files?.[0]; 
+      if(!file) return; 
+      // KIRIM OBJEK FILE BUKAN URL
+      await loadIFC(file); 
+    });
+
+    // Optional: auto-load ./assets/model.ifc if exists
+    // Menggunakan fungsi loadIFC yang sudah di-update untuk string URL
+    fetch('./assets/model.ifc', { method:'HEAD' }).then(r=>{ 
+      if(r.ok) loadIFC('./assets/model.ifc'); 
+    }).catch(err => console.log('Tidak ada file model.ifc lokal.', err)); // Tangani jika file tidak ada
+
+    // Render loop & resize (Sudah benar)
+    function render(){ renderer.render(scene, camera); controls.update(); requestAnimationFrame(render); }
+    render();
+    window.addEventListener('resize', ()=>{ camera.aspect = canvas.clientWidth/canvas.clientHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight-48); });
+  </script>
 </body>
 </html>
