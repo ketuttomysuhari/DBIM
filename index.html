@@ -3,14 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Three.js 4-Pillars Boilerplate — Geometry • Topology • Semantics • Georeference</title>
+  <title>IFC.js 4-Pillars Boilerplate — Geometry • Topology • Semantics • Georeference</title>
 
-  <!-- IMPORT MAP: fixes "Module name 'three' does not resolve to a valid URL" by mapping bare specifiers used inside addons -->
+  <!-- IMPORT MAP: map bare specifiers used by addons & web-ifc-three -->
   <script type="importmap">
   {
     "imports": {
       "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+      "web-ifc": "https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/",
+      "web-ifc-three/": "https://cdn.jsdelivr.net/npm/web-ifc-three@0.0.152/esm/"
     }
   }
   </script>
@@ -48,12 +50,12 @@
 <div class="grid">
   <header>
     <div class="pill">
-      <strong>MODEL</strong>
-      <label for="ifcFile" class="tag">📁 Load GLB/GLTF (+ semantics.json, georef.json)</label>
-      <input id="ifcFile" type="file" accept=".glb,.gltf,.json" multiple />
+      <strong>IFC</strong>
+      <label for="ifcFile" class="tag">📁 Load IFC / IFCZIP</label>
+      <input id="ifcFile" type="file" accept=".ifc,.ifczip" />
     </div>
     <div class="pill">
-      <span>🗺️ Map Basemap:</span>
+      <span>🗺️ Basemap:</span>
       <select id="basemap">
         <option value="osm">OpenStreetMap</option>
         <option value="esri">Esri World Imagery (Satellite)</option>
@@ -70,7 +72,7 @@
       <button id="flyToMarker">Fly to Marker</button>
       <span class="tiny">(click object to drop marker)</span>
     </div>
-    <div class="pill status" id="diag">🧪 Ready • Three: – • Map: –</div>
+    <div class="pill status" id="diag">🧪 Ready • Three: – • IFC: – • Map: –</div>
     <div class="pill"><button id="runTests">Run Self‑Test</button></div>
   </header>
   <section id="viewer">
@@ -90,9 +92,9 @@
         <div class="row"><label>Scale</label><input id="scale" type="text" value="1"></div>
         <div class="row"><label>X Axis</label><input id="xaxis" type="text" value="1,0"></div>
         <button id="applyGeo">Apply Georef</button>
-        <div class="tiny" id="geoStatus">Provide georef or georef.json…</div>
+        <div class="tiny" id="geoStatus">Awaiting IFC…</div>
         <div class="sep"></div>
-        <div class="tiny">Tip: put files in <code>/assets</code> and name them <code>model.glb</code>, <code>semantics.json</code>, <code>georef.json</code> for auto‑load.</div>
+        <div class="tiny">If IFC has <em>IfcProjectedCRS</em> + <em>IfcMapConversion</em>, fields auto‑fill.</div>
       </div>
     </div>
   </section>
@@ -103,13 +105,13 @@
 <script type="module">
   import * as THREE from 'three';
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+  import { IFCLoader } from 'web-ifc-three/IFCLoader.js';
   import { MeshBVH, acceleratedRaycast } from 'https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.2/build/index.module.js';
   import proj4 from 'https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js';
 
   const diag = document.getElementById('diag');
   const setDiag = (t)=> diag.textContent = t;
-  setDiag(`🧪 Booting • Three: r${THREE.REVISION} • Map: –`);
+  setDiag(`🧪 Booting • Three: r${THREE.REVISION} • IFC: loading • Map: –`);
 
   const $ = (sel)=>document.querySelector(sel);
   const canvas = document.getElementById('ifcCanvas');
@@ -130,44 +132,48 @@
   let currentIntersect = null;
   const grid = new THREE.GridHelper(100, 100, 0x233046, 0x1f2937); grid.position.y = 0; scene.add(grid);
 
-  const gltfLoader = new GLTFLoader();
+  // ====== IFC Loader ======
+  const ifcLoader = new IFCLoader();
+  // IMPORTANT: set wasm path to CDN (CORS-safe for GH Pages)
+  ifcLoader.ifcManager.setWasmPath('https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/');
+
   const modelGroup = new THREE.Group(); scene.add(modelGroup);
+  const SEM_INDEX = new Map(); // guid -> {id,type,props,psets}
+  let MODEL_ID = null;
+
+  // BVH index for topology
   const BVH_INDEX = new WeakMap();
-  const SEM_INDEX = new Map();
-  const MESH_GUID = new Map();
 
-  async function loadAll(urlGLB, urlSemantics, urlGeoref){
-    const gltf = await gltfLoader.loadAsync(urlGLB);
-    modelGroup.add(gltf.scene);
-    gltf.scene.traverse(o=>{ if(o.isMesh){ o.geometry.boundsTree = new MeshBVH(o.geometry, { lazyGeneration:false }); BVH_INDEX.set(o, o.geometry.boundsTree); o.castShadow = o.receiveShadow = true; }});
-
-    if(urlSemantics){
-      try{ const res = await fetch(urlSemantics); if(res.ok){ const sem = await res.json(); for (const [guid, rec] of Object.entries(sem)){ SEM_INDEX.set(guid, rec); (rec.meshNames||[]).forEach(n=>{ const mesh = gltf.scene.getObjectByName(n); if(mesh) MESH_GUID.set(mesh.uuid, guid); }); } } }
-      catch(err){ console.warn('Semantics not loaded:', err); }
-    }
-
-    if(urlGeoref){
-      try{ const res = await fetch(urlGeoref); if(res.ok){ const g = await res.json(); if(g.proj4){ $('#projDef').value = g.proj4; try{ proj4.defs('LOCAL_CRS', g.proj4); }catch{} } if(g.eastings!=null) $('#east').value = g.eastings; if(g.northings!=null) $('#north').value = g.northings; if(g.height!=null) $('#orthH').value = g.height; if(g.scale!=null) $('#scale').value = g.scale; if(Array.isArray(g.xAxis)) $('#xaxis').value = `${g.xAxis[0]||1},${g.xAxis[1]||0}`; setGeorefFromUI(); $('#geoStatus').textContent = 'Georef loaded ✓'; } }
-      catch(err){ console.warn('Georef not loaded:', err); }
-    }
-
+  async function loadIFC(url){
+    const model = await ifcLoader.loadAsync(url);
+    MODEL_ID = model.modelID;
+    modelGroup.add(model);
+    model.traverse(o=>{ if(o.isMesh){ o.geometry.boundsTree = new MeshBVH(o.geometry, { lazyGeneration:false }); BVH_INDEX.set(o, o.geometry.boundsTree); o.castShadow = o.receiveShadow = true; }});
+    await tryExtractGeorefFromIFC();
+    await indexSemantics();
     $('#propPanel').hidden = false;
+    setDiag(`🧪 Ready • Three: r${THREE.REVISION} • IFC: on • Map: ${window.__map?'on':'–'}`);
   }
 
-  const fileInput = document.getElementById('ifcFile');
-  fileInput.addEventListener('change', async (e)=>{
-    const files = [...(e.target.files||[])];
-    if(!files.length) return;
-    const glb = files.find(f=>/\.(glb|gltf)$/i.test(f.name));
-    const sem = files.find(f=>/semantics\.(json)$/i.test(f.name));
-    const geo = files.find(f=>/georef\.(json)$/i.test(f.name));
-    if(!glb){ alert('Select a .glb/.gltf model'); return; }
-    const toURL = (f)=>URL.createObjectURL(f);
-    await loadAll(toURL(glb), sem?toURL(sem):null, geo?toURL(geo):null);
-  });
+  async function indexSemantics(){
+    if (!MODEL_ID) return;
+    const ifc = ifcLoader.ifcManager;
+    const products = await ifc.getAllItemsOfType(MODEL_ID, ifc.typesIfc.IFCPRODUCT, true).catch(()=>[]);
+    for (const id of products){
+      try{
+        const props = await ifc.getItemProperties(MODEL_ID, id, true);
+        const guid = props?.GlobalId?.value; if(!guid) continue;
+        const type = props?.ifcType || props?.__proto__?.constructor?.name || 'IfcProduct';
+        const psets = await ifc.getPropertySets(MODEL_ID, id, true).catch(()=>[]);
+        SEM_INDEX.set(guid, { id, guid, type, props, psets });
+      }catch{}
+    }
+  }
 
+  // ====== Georeference via IfcMapConversion or manual ======
   let M_LOCAL_TO_CRS = new THREE.Matrix4();
   let CRS_DEF = null;
+
   function setGeorefFromUI(){
     const projDef = $('#projDef').value.trim();
     if (projDef) { try{ proj4.defs('LOCAL_CRS', projDef); CRS_DEF = projDef; }catch{} }
@@ -189,6 +195,33 @@
   }
   $('#applyGeo').addEventListener('click', setGeorefFromUI);
 
+  async function tryExtractGeorefFromIFC(){
+    if (!MODEL_ID) return;
+    const ifc = ifcLoader.ifcManager;
+    try{
+      const projCRS = await ifc.getAllItemsOfType(MODEL_ID, ifc.typesIfc.IFCPROJECTEDCRS, true).catch(()=>[]);
+      if (projCRS?.length){
+        const crs = await ifc.getItemProperties(MODEL_ID, projCRS[0], true);
+        const name = crs?.Name?.value || '';
+        if (name){ $('#projDef').value = name; try{ proj4.defs('LOCAL_CRS', name); CRS_DEF = name; }catch{} }
+      }
+      const mapConvIDs = await ifc.getAllItemsOfType(MODEL_ID, ifc.typesIfc.IFCMAPCONVERSION, true).catch(()=>[]);
+      if (mapConvIDs?.length){
+        const mc = await ifc.getItemProperties(MODEL_ID, mapConvIDs[0], true);
+        $('#east').value = mc?.Eastings?.value ?? 0;
+        $('#north').value = mc?.Northings?.value ?? 0;
+        $('#orthH').value = mc?.OrthogonalHeight?.value ?? 0;
+        $('#scale').value = mc?.Scale?.value ?? 1;
+        const ax = mc?.XAxisAbscissa?.value ?? 1; const ay = mc?.XAxisOrdinate?.value ?? 0;
+        $('#xaxis').value = `${ax},${ay}`;
+        setGeorefFromUI();
+        $('#geoStatus').textContent = 'Georef auto‑filled ✓';
+      } else {
+        $('#geoStatus').textContent = 'No IfcMapConversion found — set manually.';
+      }
+    }catch(e){ $('#geoStatus').textContent = 'Georef read failed — set manually.'; console.warn(e); }
+  }
+
   function localToLonLatHeight(vLocal){
     const v = vLocal.clone().applyMatrix4(M_LOCAL_TO_CRS);
     if (!CRS_DEF) return { lon: null, lat: null, h: v.z };
@@ -196,9 +229,10 @@
     catch { return { lon: null, lat: null, h: v.z }; }
   }
 
+  // ====== Pointer picking & properties ======
   const propBody = document.getElementById('propBody');
-  let PICK_A = null, PICK_B = null;
-  const relLabel = document.getElementById('relLabel');
+  let PICK_A = null, PICK_B = null; const relLabel = document.getElementById('relLabel');
+
   function meshAtPointer(ev){
     const rect = renderer.domElement.getBoundingClientRect();
     mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
@@ -207,40 +241,44 @@
     const hits = raycaster.intersectObject(modelGroup, true);
     return hits[0] || null;
   }
-  canvas.addEventListener('pointerdown', (ev)=>{
+
+  canvas.addEventListener('pointerdown', async (ev)=>{
     const hit = meshAtPointer(ev); if (!hit) return;
-    currentIntersect = hit; const m = hit.object; highlight(m); showPropertiesForMesh(m); dropMarkerAtHit(hit);
+    currentIntersect = hit; const m = hit.object; highlight(m); await showPropertiesForHit(hit); dropMarkerAtHit(hit);
   });
+
   document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape') { clearHighlight(); propBody.innerHTML = ''; } });
 
-  function showPropertiesForMesh(mesh){
-    propBody.innerHTML = '';
+  async function showPropertiesForHit(hit){
+    const mesh = hit.object; propBody.innerHTML = '';
     const rows = [];
-    const guid = mesh.userData.guid || null; // from semantics.json mapping if you add it later
-    rows.push(['Mesh Name', mesh.name||'(unnamed)']);
-    if (guid && SEM_INDEX.has(guid)){
-      const rec = SEM_INDEX.get(guid);
-      rows.push(['GUID', guid]);
-      rows.push(['Type', rec.type||'']);
-      rows.push(['Name', rec.name||'']);
-      const psets = rec.psets||{};
-      for (const [psName, kv] of Object.entries(psets)){
-        const line = Object.entries(kv).map(([k,v])=>`${k}: ${v}`).join(', ');
-        rows.push([psName, line]);
+    try{
+      const ifc = ifcLoader.ifcManager;
+      const faceIndex = hit.faceIndex ?? null;
+      let id = null; if (faceIndex != null) id = ifc.getExpressId(mesh.geometry, faceIndex);
+      if (id != null){
+        const p = await ifc.getItemProperties(MODEL_ID, id, true);
+        const guid = p?.GlobalId?.value; const type = p?.ifcType || p?.__proto__?.constructor?.name;
+        rows.push(['GUID', guid]); rows.push(['Type', type]);
+        const name = p?.Name?.value||''; if(name) rows.push(['Name', name]);
+        const psets = await ifc.getPropertySets(MODEL_ID, id, true).catch(()=>[]);
+        for (const ps of psets){
+          const pName = ps?.Name?.value || 'Pset';
+          const kv = (ps?.HasProperties||[]).map(pp=>`${pp?.Name?.value}: ${pp?.NominalValue?.value}`).join(', ');
+          rows.push([pName, kv]);
+        }
       }
-    }
-    rows.forEach(([k,v])=>{
-      const div = document.createElement('div');
-      div.className='row';
-      div.innerHTML = `<label>${k}</label><div class="tiny">${(v??'').toString().replaceAll('<','&lt;')}</div>`;
-      propBody.appendChild(div);
-    });
+    }catch(e){ rows.push(['Error','Unable to load properties']); console.warn(e); }
+    rows.forEach(([k,v])=>{ const div = document.createElement('div'); div.className='row'; div.innerHTML = `<label>${k}</label><div class="tiny">${(v??'').toString().replaceAll('<','&lt;')}</div>`; propBody.appendChild(div); });
+    $('#propPanel').hidden = false;
   }
 
+  // Highlight helpers
   let lastHighlightBox = null;
   function highlight(mesh){ if (lastHighlightBox){ lastHighlightBox.parent?.remove(lastHighlightBox); lastHighlightBox = null; } const box = new THREE.BoxHelper(mesh, 0x22c55e); lastHighlightBox = box; mesh.add(box); }
   function clearHighlight(){ if (lastHighlightBox){ lastHighlightBox.parent?.remove(lastHighlightBox); lastHighlightBox=null; } }
 
+  // ====== Topology utilities (BVH) ======
   function aabbIntersects(meshA, meshB){ meshA.geometry.computeBoundingBox(); meshB.geometry.computeBoundingBox(); const ba = meshA.geometry.boundingBox.clone().applyMatrix4(meshA.matrixWorld); const bb = meshB.geometry.boundingBox.clone().applyMatrix4(meshB.matrixWorld); return ba.intersectsBox(bb); }
   function meshesOverlapBVH(meshA, meshB){ let hit=false; MeshBVH.intersectsGeometry(meshA.geometry.boundsTree, meshA.geometry, meshA.matrixWorld, meshB.geometry.boundsTree, meshB.geometry, meshB.matrixWorld, ()=>{ hit=true; return true; }); return hit; }
   function meshesTouchBVH(meshA, meshB){ let touch=false, cut=false; MeshBVH.intersectsGeometry(meshA.geometry.boundsTree, meshA.geometry, meshA.matrixWorld, meshB.geometry.boundsTree, meshB.geometry, meshB.matrixWorld, (triA, triB)=>{ const cop = Math.abs(triA.normal.dot(triB.normal))>0.999; if(cop){ touch=true; } else { cut=true; return true; } }); return touch && !cut; }
@@ -251,13 +289,13 @@
   $('#pickB').addEventListener('click', ()=>{ if(currentIntersect){ window.PICK_B = currentIntersect.object; relLabel.textContent = 'B set ✓'; }});
   $('#relate').addEventListener('click', ()=>{ const r = relate(window.PICK_A,window.PICK_B); relLabel.textContent = r; });
 
-  // Leaflet integration booted by external script
+  // ====== Leaflet integration booted by external script ======
   window.__LEAFLET_BOOT = ()=>{
     const map = L.map('map', { zoomControl:true, center:[-7.978,112.631], zoom:15 });
     const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
     const esri = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, attribution: 'Tiles © Esri, Maxar' });
     const markers = L.layerGroup().addTo(map);
-    setDiag(`🧪 Booted • Three: r${THREE.REVISION} • Map: on`);
+    setDiag(`🧪 Ready • Three: r${THREE.REVISION} • IFC: ${MODEL_ID?'on':'–'} • Map: on`);
 
     const basemapSel = document.getElementById('basemap');
     basemapSel.addEventListener('change', ()=>{ if (basemapSel.value === 'osm') { map.addLayer(osm); map.removeLayer(esri); } else { map.addLayer(esri); map.removeLayer(osm); } });
@@ -274,14 +312,22 @@
   render();
   window.addEventListener('resize', ()=>{ camera.aspect = canvas.clientWidth/canvas.clientHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight-48); });
 
-  // Auto-load /assets/model.glb if present (GitHub Pages friendly)
-  fetch('./assets/model.glb', {method:'HEAD'}).then(r=>{ if(r.ok) loadAll('./assets/model.glb','./assets/semantics.json','./assets/georef.json'); });
+  // File input
+  const fileInput = document.getElementById('ifcFile');
+  fileInput.addEventListener('change', async (e)=>{
+    const file = e.target.files?.[0]; if (!file) return;
+    const url = URL.createObjectURL(file);
+    await loadIFC(url);
+  });
 
-  // ---------------- Self-tests (basic runtime checks) ----------------
+  // Auto-load /assets/model.ifc if present (GitHub Pages friendly)
+  fetch('./assets/model.ifc', {method:'HEAD'}).then(r=>{ if(r.ok) loadIFC('./assets/model.ifc'); });
+
+  // ---------------- Self-tests ----------------
   function selfTest(){
     const results = [];
     try{ results.push(['THREE import', !!THREE.Scene]); }catch(e){ results.push(['THREE import', false]); }
-    try{ const g = new THREE.BoxGeometry(1,1,1); const m = new THREE.MeshBasicMaterial(); const mesh = new THREE.Mesh(g,m); scene.add(mesh); scene.remove(mesh); results.push(['Basic three usage', true]); }catch(e){ results.push(['Basic three usage', false]); }
+    try{ results.push(['IFCLoader present', !!IFCLoader]); }catch(e){ results.push(['IFCLoader present', false]); }
     try{ results.push(['BVH plugin', !!MeshBVH]); }catch(e){ results.push(['BVH plugin', false]); }
     try{ results.push(['proj4', typeof proj4 === 'function' || typeof proj4 === 'object']); }catch(e){ results.push(['proj4', false]); }
     const mapOk = !!window.__map; results.push(['Leaflet map', mapOk]);
