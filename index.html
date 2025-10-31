@@ -5,15 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>IFC.js Minimal Viewer — Load & Orbit</title>
 
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-      "web-ifc": "https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/",
-      "web-ifc-three/": "https://cdn.jsdelivr.net/npm/web-ifc-three@0.0.152/esm/"
-    }
-  }
+    <script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "web-ifc": "https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/",
+    "web-ifc-three/": "https://cdn.jsdelivr.net/npm/web-ifc-three@0.0.152/esm/"
+  }
+}
   </script>
 
   <style>
@@ -46,8 +46,6 @@
     const diag = document.getElementById('diag');
     const canvas = document.getElementById('ifcCanvas');
 
-    // --- Three.js Setup (Tidak diubah, sudah benar) ---
-
     // Renderer & scene
     const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -60,19 +58,17 @@
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0,3,0); controls.update();
 
-    // Light & helpers (very minimal)
+    // Light & helpers
     scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 0.9));
     const dir = new THREE.DirectionalLight(0xffffff, 0x666666, 0.6); dir.position.set(20,40,20); scene.add(dir);
     const grid = new THREE.GridHelper(100, 100, 0x233046, 0x1f2937); grid.position.y = 0; scene.add(grid);
 
-    // --- IFC Loader Setup ---
+    // IFC Loader
     const ifcLoader = new IFCLoader();
-    // WASM path-nya sudah benar
     ifcLoader.ifcManager.setWasmPath('https://cdn.jsdelivr.net/npm/web-ifc@0.0.47/');
 
     const modelGroup = new THREE.Group(); scene.add(modelGroup);
 
-    // Fungsi untuk fokus kamera (Sudah benar)
     function fitToObject(obj){
       const box = new THREE.Box3().setFromObject(obj);
       if(box.isEmpty()) return;
@@ -80,18 +76,17 @@
       const center = box.getCenter(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z);
       const dist = maxDim * 1.4 / Math.tan((camera.fov * Math.PI) / 360);
-      // Menggunakan posisi kamera yang agak ke atas untuk sudut pandang yang lebih baik
-      const dirVec = new THREE.Vector3(1, 1.5, 1).normalize(); // Perbaikan kecil di sini
+      const dirVec = new THREE.Vector3(1, 1.5, 1).normalize();
       camera.position.copy(center.clone().add(dirVec.multiplyScalar(dist)));
       controls.target.copy(center); controls.update();
     }
 
-    // PERBAIKAN: Fungsi untuk memuat file IFC sebagai ArrayBuffer (untuk file lokal)
+    // Fungsi pemuatan yang mendukung File object (local) atau string (URL)
     async function loadIFC(file){
       try{
         diag.textContent = 'Loading...';
 
-        // Clear model sebelumnya
+        // clear previous
         while (modelGroup.children.length){ 
           const c = modelGroup.children.pop(); 
           c.traverse(n=>{ 
@@ -105,11 +100,11 @@
         let model;
         
         if (file instanceof File) {
-          // Jika berupa objek File (dari input/drag&drop), baca sebagai ArrayBuffer
+          // Untuk file lokal (input/drag&drop), baca sebagai ArrayBuffer dan gunakan .parse()
           const buffer = await file.arrayBuffer();
-          model = await ifcLoader.parse(buffer); // Gunakan .parse() dengan ArrayBuffer
+          model = await ifcLoader.parse(buffer);
         } else if (typeof file === 'string') {
-          // Jika berupa string (untuk auto-load file eksternal), gunakan loadAsync
+          // Untuk URL eksternal, gunakan .loadAsync()
           model = await ifcLoader.loadAsync(file);
         } else {
           throw new Error("Tipe file tidak didukung.");
@@ -125,33 +120,29 @@
       }
     }
 
-    // File input listener (PERBAIKAN)
+    // File input listener
     document.getElementById('ifcFile').addEventListener('change', async (e)=>{
       const file = e.target.files?.[0]; 
       if(!file) return;
-      // KIRIM OBJEK FILE BUKAN URL
       await loadIFC(file);
-      // Reset input agar event 'change' ter-trigger jika file yang sama dimuat lagi
       e.target.value = null; 
     });
 
-    // Drag & drop listener (PERBAIKAN)
+    // Drag & drop listener
     window.addEventListener('dragover', e=>{ e.preventDefault(); });
     window.addEventListener('drop', async (e)=>{ 
       e.preventDefault(); 
       const file = e.dataTransfer?.files?.[0]; 
       if(!file) return; 
-      // KIRIM OBJEK FILE BUKAN URL
       await loadIFC(file); 
     });
 
     // Optional: auto-load ./assets/model.ifc if exists
-    // Menggunakan fungsi loadIFC yang sudah di-update untuk string URL
     fetch('./assets/model.ifc', { method:'HEAD' }).then(r=>{ 
       if(r.ok) loadIFC('./assets/model.ifc'); 
-    }).catch(err => console.log('Tidak ada file model.ifc lokal.', err)); // Tangani jika file tidak ada
+    }).catch(err => console.log('Tidak ada file model.ifc lokal.'));
 
-    // Render loop & resize (Sudah benar)
+    // Render loop & resize
     function render(){ renderer.render(scene, camera); controls.update(); requestAnimationFrame(render); }
     render();
     window.addEventListener('resize', ()=>{ camera.aspect = canvas.clientWidth/canvas.clientHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight-48); });
