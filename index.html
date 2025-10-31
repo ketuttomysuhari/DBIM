@@ -4,328 +4,25 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Three.js 4-Pillars Boilerplate — Geometry • Topology • Semantics • Georeference</title>
-  <!-- ✅ Three.js only (no ifc.js). Load a GLB and optional semantics.json + georef.json -->
-  <script type="module" crossorigin>
-    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
-    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
-    import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
-    import { MeshBVH, acceleratedRaycast } from 'https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.2/build/index.module.js';
-    import proj4 from 'https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js';
 
-    // ====== UI helpers ======
-    const $ = (sel)=>document.querySelector(sel);
-
-    // ====== THREE setup ======
-    const canvas = document.getElementById('ifcCanvas');
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    renderer.setSize(innerWidth, innerHeight-48);
-    renderer.setClearColor('#0e1116', 1);
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(60, canvas.clientWidth/canvas.clientHeight, 0.1, 10000);
-    camera.position.set(16,12,16);
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0,3,0);
-    controls.update();
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x222233, 1.0));
-
-    THREE.Mesh.prototype.raycast = acceleratedRaycast; // enable BVH-accelerated raycast
-
-    const raycaster = new THREE.Raycaster();
-    const mouse = new THREE.Vector2();
-    let currentIntersect = null;
-
-    const grid = new THREE.GridHelper(100, 100, 0x233046, 0x1f2937); grid.position.y = 0; scene.add(grid);
-
-    // ====== Model & semantics (three.js only) ======
-    const gltfLoader = new GLTFLoader();
-    const modelGroup = new THREE.Group(); scene.add(modelGroup);
-    const BVH_INDEX = new WeakMap();
-
-    // Semantics store (from sidecar JSON): guid -> {name,type,psets}
-    const SEM_INDEX = new Map();
-    // Map mesh.uuid -> guid for quick lookup (filled from semantics file or mesh.name)
-    const MESH_GUID = new Map();
-
-    // Expected files (in /assets by default):
-    // - model.glb (geometry)
-    // - semantics.json (optional) { guid: {name,type,psets, meshNames:[...] } }
-    // - georef.json (optional) { proj4:"...", eastings:..., northings:..., height:..., scale:..., xAxis:[ax,ay] }
-
-    async function loadAll(urlGLB, urlSemantics, urlGeoref){
-      // 1) Load GLB
-      const gltf = await gltfLoader.loadAsync(urlGLB);
-      modelGroup.add(gltf.scene);
-      gltf.scene.traverse(o=>{
-        if(o.isMesh){
-          o.geometry.boundsTree = new MeshBVH(o.geometry, { lazyGeneration:false });
-          BVH_INDEX.set(o, o.geometry.boundsTree);
-          o.castShadow = o.receiveShadow = true;
-        }
-      });
-
-      // 2) Load semantics (optional)
-      if(urlSemantics){
-        try{
-          const res = await fetch(urlSemantics);
-          if(res.ok){
-            const sem = await res.json();
-            for (const [guid, rec] of Object.entries(sem)){
-              SEM_INDEX.set(guid, rec);
-              const names = rec.meshNames||[];
-              names.forEach(n=>{
-                const mesh = gltf.scene.getObjectByName(n);
-                if(mesh) MESH_GUID.set(mesh.uuid, guid);
-              });
-            }
-          }
-        }catch(err){ console.warn('Semantics not loaded:', err); }
-      }
-
-      // 3) Load georef (optional)
-      if(urlGeoref){
-        try{
-          const res = await fetch(urlGeoref);
-          if(res.ok){
-            const g = await res.json();
-            if(g.proj4){ $('#projDef').value = g.proj4; try{ proj4.defs('LOCAL_CRS', g.proj4); }catch{} }
-            if(g.eastings!=null) $('#east').value = g.eastings;
-            if(g.northings!=null) $('#north').value = g.northings;
-            if(g.height!=null) $('#orthH').value = g.height;
-            if(g.scale!=null) $('#scale').value = g.scale;
-            if(Array.isArray(g.xAxis)) $('#xaxis').value = `${g.xAxis[0]||1},${g.xAxis[1]||0}`;
-            setGeorefFromUI();
-            $('#geoStatus').textContent = 'Georef loaded ✓';
-          }
-        }catch(err){ console.warn('Georef not loaded:', err); }
-      }
-
-      $('#propPanel').hidden = false;
+  <!-- IMPORT MAP: fixes "Module name 'three' does not resolve to a valid URL" by mapping bare specifiers used inside addons -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
     }
-
-    // Drag & drop GLB/JSON
-    const fileInput = document.getElementById('ifcFile');
-    fileInput.addEventListener('change', async (e)=>{
-      const files = [...(e.target.files||[])];
-      if(!files.length) return;
-      const glb = files.find(f=>/\.(glb|gltf)$/i.test(f.name));
-      const sem = files.find(f=>/semantics\.(json)$/i.test(f.name));
-      const geo = files.find(f=>/georef\.(json)$/i.test(f.name));
-      if(!glb){ alert('Select a .glb/.gltf model'); return; }
-      const toURL = (f)=>URL.createObjectURL(f);
-      await loadAll(toURL(glb), sem?toURL(sem):null, geo?toURL(geo):null);
-    });
-
-    // ====== Georeference (proj4 + manual fields) ======
-    let M_LOCAL_TO_CRS = new THREE.Matrix4();
-    let CRS_DEF = null; // proj4 string
-
-    function setGeorefFromUI(){
-      const projDef = $('#projDef').value.trim();
-      if (projDef) {
-        try{ proj4.defs('LOCAL_CRS', projDef); CRS_DEF = projDef; }catch{}
-      }
-      const east = parseFloat($('#east').value||'0');
-      const north = parseFloat($('#north').value||'0');
-      const h = parseFloat($('#orthH').value||'0');
-      const scale = parseFloat($('#scale').value||'1');
-      const [ax, ay] = ($('#xaxis').value||'1,0').split(',').map(Number);
-
-      const R = new THREE.Matrix4();
-      const xAxis = new THREE.Vector3(ax, ay, 0).normalize();
-      const yAxis = new THREE.Vector3(-ay, ax, 0).normalize();
-      const zAxis = new THREE.Vector3(0,0,1);
-      R.makeBasis(xAxis, yAxis, zAxis);
-      const S = new THREE.Matrix4().makeScale(scale, scale, scale);
-      const M = new THREE.Matrix4().multiplyMatrices(R,S);
-      M.setPosition(new THREE.Vector3(east, north, h));
-      M_LOCAL_TO_CRS = M;
-      $('#geoStatus').textContent = CRS_DEF ? 'Georef set ✓' : 'Georef set (no CRS)';
-    }
-
-    $('#applyGeo').addEventListener('click', setGeorefFromUI);
-
-    function localToLonLatHeight(vLocal){
-      const v = vLocal.clone().applyMatrix4(M_LOCAL_TO_CRS);
-      if (!CRS_DEF) return { lon: null, lat: null, h: v.z };
-      try { const [lon,lat] = proj4('LOCAL_CRS','WGS84',[v.x, v.y]); return { lon, lat, h: v.z }; }
-      catch { return { lon: null, lat: null, h: v.z }; }
-    }
-
-    // ====== Picking & property panel ======
-    const propBody = document.getElementById('propBody');
-    let PICK_A = null, PICK_B = null; // meshes
-    const relLabel = document.getElementById('relLabel');
-
-    function meshAtPointer(ev){
-      const rect = renderer.domElement.getBoundingClientRect();
-      mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(mouse, camera);
-      const hits = raycaster.intersectObject(modelGroup, true);
-      return hits[0] || null;
-    }
-
-    canvas.addEventListener('pointerdown', (ev)=>{
-      const hit = meshAtPointer(ev); if (!hit) return;
-      currentIntersect = hit; const m = hit.object; highlight(m); showPropertiesForMesh(m); dropMarkerAtHit(hit);
-    });
-
-    document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape') { clearHighlight(); propBody.innerHTML = ''; } });
-
-    function showPropertiesForMesh(mesh){
-      propBody.innerHTML = '';
-      const rows = [];
-      // Try semantic by GUID mapping (from semantics.json) or use mesh.name
-      const guid = MESH_GUID.get(mesh.uuid) || mesh.userData.guid || null;
-      rows.push(['Mesh Name', mesh.name||'(unnamed)']);
-      if (guid && SEM_INDEX.has(guid)){
-        const rec = SEM_INDEX.get(guid);
-        rows.push(['GUID', guid]);
-        rows.push(['Type', rec.type||'']);
-        rows.push(['Name', rec.name||'']);
-        const psets = rec.psets||{};
-        for (const [psName, kv] of Object.entries(psets)){
-          const line = Object.entries(kv).map(([k,v])=>`${k}: ${v}`).join(', ');
-          rows.push([psName, line]);
-        }
-      }
-      rows.forEach(([k,v])=>{
-        const div = document.createElement('div');
-        div.className='row';
-        div.innerHTML = `<label>${k}</label><div class="tiny">${(v??'').toString().replaceAll('<','&lt;')}</div>`;
-        propBody.appendChild(div);
-      });
-    }
-
-    // Simple highlight
-    let lastHighlightBox = null;
-    function highlight(mesh){
-      if (lastHighlightBox){ lastHighlightBox.parent?.remove(lastHighlightBox); lastHighlightBox = null; }
-      const box = new THREE.BoxHelper(mesh, 0x22c55e); lastHighlightBox = box; mesh.add(box);
-    }
-    function clearHighlight(){ if (lastHighlightBox){ lastHighlightBox.parent?.remove(lastHighlightBox); lastHighlightBox=null; } }
-
-    // ====== Topology utilities (BVH) ======
-    function aabbIntersects(meshA, meshB){
-      meshA.geometry.computeBoundingBox(); meshB.geometry.computeBoundingBox();
-      const ba = meshA.geometry.boundingBox.clone().applyMatrix4(meshA.matrixWorld);
-      const bb = meshB.geometry.boundingBox.clone().applyMatrix4(meshB.matrixWorld);
-      return ba.intersectsBox(bb);
-    }
-    function meshesOverlapBVH(meshA, meshB){
-      let hit=false;
-      MeshBVH.intersectsGeometry(meshA.geometry.boundsTree, meshA.geometry, meshA.matrixWorld,
-                                 meshB.geometry.boundsTree, meshB.geometry, meshB.matrixWorld,
-                                 ()=>{ hit=true; return true; });
-      return hit;
-    }
-    function meshesTouchBVH(meshA, meshB){
-      let touch=false, cut=false;
-      MeshBVH.intersectsGeometry(meshA.geometry.boundsTree, meshA.geometry, meshA.matrixWorld,
-                                 meshB.geometry.boundsTree, meshB.geometry, meshB.matrixWorld,
-         (triA, triB)=>{
-           const cop = Math.abs(triA.normal.dot(triB.normal))>0.999; if(cop){ touch=true; } else { cut=true; return true; }
-         });
-      return touch && !cut;
-    }
-    function isInside(meshA, meshB){
-      const box = new THREE.Box3().setFromObject(meshA); const c = box.getCenter(new THREE.Vector3());
-      const dir = new THREE.Vector3(1,0,0);
-      let count=0; const eps=0.01; const offs=[[0,0,0],[0,eps,0],[0,-eps,0],[0,0,eps],[0,0,-eps]];
-      for(const o of offs){
-        const origin = c.clone().add(new THREE.Vector3(0,o[1],o[2]));
-        const rc = new THREE.Raycaster(origin, dir, 0, 1e7);
-        const it = rc.intersectObject(meshB, true); count += it.length;
-      }
-      return (count%2)===1;
-    }
-    function relate(A,B){
-      if(!A||!B) return 'select A & B';
-      if(!aabbIntersects(A,B)) return 'disjoint';
-      if (meshesOverlapBVH(A,B)) return 'overlap';
-      if (meshesTouchBVH(A,B)) return 'touch';
-      const aInb = isInside(A,B); const bIna = isInside(B,A);
-      if(aInb && !bIna) return 'inside(A,B)';
-      if(bIna && !aInb) return 'inside(B,A)';
-      if(aInb && bIna)  return 'equal/cover';
-      return 'disjoint';
-    }
-
-    // Pick A / B via last clicked mesh
-    $('#pickA').addEventListener('click', ()=>{ if(currentIntersect){ window.PICK_A = currentIntersect.object; relLabel.textContent = 'A set ✓'; }});
-    $('#pickB').addEventListener('click', ()=>{ if(currentIntersect){ window.PICK_B = currentIntersect.object; relLabel.textContent = 'B set ✓'; }});
-    $('#relate').addEventListener('click', ()=>{ const r = relate(window.PICK_A,window.PICK_B); relLabel.textContent = r; });
-
-    // ====== Leaflet integration ======
-    // (Loaded later via <script> tag)
-    window.__LEAFLET_BOOT = ()=>{
-      const map = L.map('map', { zoomControl:true, center:[-7.978,112.631], zoom:15 });
-      const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 20, attribution: '&copy; OpenStreetMap contributors'
-      }).addTo(map);
-      const esri = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-        maxZoom: 20, attribution: 'Tiles © Esri, Maxar'
-      });
-      const markers = L.layerGroup().addTo(map);
-
-      const basemapSel = document.getElementById('basemap');
-      basemapSel.addEventListener('change', ()=>{
-        if (basemapSel.value === 'osm') { map.addLayer(osm); map.removeLayer(esri); }
-        else { map.addLayer(esri); map.removeLayer(osm); }
-      });
-
-      document.getElementById('linkCam').addEventListener('click', ()=>{
-        const world = new THREE.Vector3().copy(controls.target);
-        const {lon,lat} = localToLonLatHeight(world);
-        if (lon!=null && lat!=null) map.flyTo([lat, lon], 18);
-      });
-
-      document.getElementById('flyToMarker').addEventListener('click', ()=>{
-        const layers = markers.getLayers(); if(!layers.length) return;
-        const m = layers[0]; map.flyTo(m.getLatLng(), 19);
-      });
-
-      window.__dropMarkerAt = (lon,lat,h)=>{
-        markers.clearLayers();
-        const m = L.marker([lat, lon]).addTo(markers);
-        m.bindPopup(`<b>Picked point</b><br>Lon: ${lon.toFixed(6)}<br>Lat: ${lat.toFixed(6)}<br>H: ${h.toFixed(2)} m`).openPopup();
-      };
-
-      // expose map for debugging
-      window.__map = map;
-    };
-
-    function dropMarkerAtHit(hit){
-      const p = hit.point.clone();
-      const { lon, lat, h } = localToLonLatHeight(p);
-      if (lon==null || lat==null){
-        alert('No CRS defined. Set georeference first.');
-        return;
-      }
-      if(window.__dropMarkerAt) window.__dropMarkerAt(lon,lat,h);
-    }
-
-    // ====== Animate & resize ======
-    function render(){ renderer.render(scene, camera); requestAnimationFrame(render); }
-    render();
-    window.addEventListener('resize', ()=>{
-      camera.aspect = canvas.clientWidth/canvas.clientHeight; camera.updateProjectionMatrix();
-      renderer.setSize(innerWidth, innerHeight-48);
-    });
-
-    // ====== Quick demo: try load /assets/model.glb if present ======
-    // You can remove this and rely on the file picker instead.
-    fetch('./assets/model.glb', {method:'HEAD'}).then(r=>{ if(r.ok) loadAll('./assets/model.glb','./assets/semantics.json','./assets/georef.json'); });
-
+  }
   </script>
 
+  <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
   <style>
     :root{ --bg:#0e1116; --panel:#111827; --muted:#9ca3af; --accent:#22c55e; --danger:#ef4444; }
     html,body{height:100%; margin:0; background:#0b0f14; color:#e5e7eb; font:14px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
     .grid{display:grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr; height:100%}
-    header{grid-column:1/3; padding:.6rem 1rem; background:#0f172a; display:flex; gap:.75rem; align-items:center; position:sticky; top:0; z-index:15}
+    header{grid-column:1/3; padding:.6rem 1rem; background:#0f172a; display:flex; gap:.75rem; align-items:center; position:sticky; top:0; z-index:15; flex-wrap:wrap}
     header .pill{background:#111827;border:1px solid #1f2937;border-radius:999px; padding:.35rem .7rem; display:inline-flex; gap:.5rem; align-items:center}
     header input[type=file]{display:none}
     header label{cursor:pointer}
@@ -344,6 +41,7 @@
     .sep{height:1px; background:#1f2937; margin:.35rem 0}
     .kbd{font:600 12px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background:#0b1220; border:1px solid #1f2937; padding:1px 5px; border-radius:6px}
     .footer{font-size:12px; color:#94a3b8; padding:8px 12px; border-top:1px solid #1f2937}
+    .status{white-space:nowrap}
   </style>
 </head>
 <body>
@@ -372,6 +70,8 @@
       <button id="flyToMarker">Fly to Marker</button>
       <span class="tiny">(click object to drop marker)</span>
     </div>
+    <div class="pill status" id="diag">🧪 Ready • Three: – • Map: –</div>
+    <div class="pill"><button id="runTests">Run Self‑Test</button></div>
   </header>
   <section id="viewer">
     <canvas id="ifcCanvas"></canvas>
@@ -392,14 +92,207 @@
         <button id="applyGeo">Apply Georef</button>
         <div class="tiny" id="geoStatus">Provide georef or georef.json…</div>
         <div class="sep"></div>
-        <div class="tiny">Tip: put files in <code>/assets</code> and name them <code>model.glb</code>, <code>semantics.json</code>, <code>georef.json</code> for auto-load.</div>
+        <div class="tiny">Tip: put files in <code>/assets</code> and name them <code>model.glb</code>, <code>semantics.json</code>, <code>georef.json</code> for auto‑load.</div>
       </div>
     </div>
   </section>
   <section id="map"></section>
 </div>
 
-<!-- Leaflet boot -->
+<!-- Main module AFTER importmap -->
+<script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+  import { MeshBVH, acceleratedRaycast } from 'https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.2/build/index.module.js';
+  import proj4 from 'https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.min.js';
+
+  const diag = document.getElementById('diag');
+  const setDiag = (t)=> diag.textContent = t;
+  setDiag(`🧪 Booting • Three: r${THREE.REVISION} • Map: –`);
+
+  const $ = (sel)=>document.querySelector(sel);
+  const canvas = document.getElementById('ifcCanvas');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight-48);
+  renderer.setClearColor('#0e1116', 1);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, canvas.clientWidth/canvas.clientHeight, 0.1, 10000);
+  camera.position.set(16,12,16);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0,3,0); controls.update();
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x222233, 1.0));
+
+  THREE.Mesh.prototype.raycast = acceleratedRaycast;
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  let currentIntersect = null;
+  const grid = new THREE.GridHelper(100, 100, 0x233046, 0x1f2937); grid.position.y = 0; scene.add(grid);
+
+  const gltfLoader = new GLTFLoader();
+  const modelGroup = new THREE.Group(); scene.add(modelGroup);
+  const BVH_INDEX = new WeakMap();
+  const SEM_INDEX = new Map();
+  const MESH_GUID = new Map();
+
+  async function loadAll(urlGLB, urlSemantics, urlGeoref){
+    const gltf = await gltfLoader.loadAsync(urlGLB);
+    modelGroup.add(gltf.scene);
+    gltf.scene.traverse(o=>{ if(o.isMesh){ o.geometry.boundsTree = new MeshBVH(o.geometry, { lazyGeneration:false }); BVH_INDEX.set(o, o.geometry.boundsTree); o.castShadow = o.receiveShadow = true; }});
+
+    if(urlSemantics){
+      try{ const res = await fetch(urlSemantics); if(res.ok){ const sem = await res.json(); for (const [guid, rec] of Object.entries(sem)){ SEM_INDEX.set(guid, rec); (rec.meshNames||[]).forEach(n=>{ const mesh = gltf.scene.getObjectByName(n); if(mesh) MESH_GUID.set(mesh.uuid, guid); }); } } }
+      catch(err){ console.warn('Semantics not loaded:', err); }
+    }
+
+    if(urlGeoref){
+      try{ const res = await fetch(urlGeoref); if(res.ok){ const g = await res.json(); if(g.proj4){ $('#projDef').value = g.proj4; try{ proj4.defs('LOCAL_CRS', g.proj4); }catch{} } if(g.eastings!=null) $('#east').value = g.eastings; if(g.northings!=null) $('#north').value = g.northings; if(g.height!=null) $('#orthH').value = g.height; if(g.scale!=null) $('#scale').value = g.scale; if(Array.isArray(g.xAxis)) $('#xaxis').value = `${g.xAxis[0]||1},${g.xAxis[1]||0}`; setGeorefFromUI(); $('#geoStatus').textContent = 'Georef loaded ✓'; } }
+      catch(err){ console.warn('Georef not loaded:', err); }
+    }
+
+    $('#propPanel').hidden = false;
+  }
+
+  const fileInput = document.getElementById('ifcFile');
+  fileInput.addEventListener('change', async (e)=>{
+    const files = [...(e.target.files||[])];
+    if(!files.length) return;
+    const glb = files.find(f=>/\.(glb|gltf)$/i.test(f.name));
+    const sem = files.find(f=>/semantics\.(json)$/i.test(f.name));
+    const geo = files.find(f=>/georef\.(json)$/i.test(f.name));
+    if(!glb){ alert('Select a .glb/.gltf model'); return; }
+    const toURL = (f)=>URL.createObjectURL(f);
+    await loadAll(toURL(glb), sem?toURL(sem):null, geo?toURL(geo):null);
+  });
+
+  let M_LOCAL_TO_CRS = new THREE.Matrix4();
+  let CRS_DEF = null;
+  function setGeorefFromUI(){
+    const projDef = $('#projDef').value.trim();
+    if (projDef) { try{ proj4.defs('LOCAL_CRS', projDef); CRS_DEF = projDef; }catch{} }
+    const east = parseFloat($('#east').value||'0');
+    const north = parseFloat($('#north').value||'0');
+    const h = parseFloat($('#orthH').value||'0');
+    const scale = parseFloat($('#scale').value||'1');
+    const [ax, ay] = ($('#xaxis').value||'1,0').split(',').map(Number);
+    const R = new THREE.Matrix4();
+    const xAxis = new THREE.Vector3(ax, ay, 0).normalize();
+    const yAxis = new THREE.Vector3(-ay, ax, 0).normalize();
+    const zAxis = new THREE.Vector3(0,0,1);
+    R.makeBasis(xAxis, yAxis, zAxis);
+    const S = new THREE.Matrix4().makeScale(scale, scale, scale);
+    const M = new THREE.Matrix4().multiplyMatrices(R,S);
+    M.setPosition(new THREE.Vector3(east, north, h));
+    M_LOCAL_TO_CRS = M;
+    $('#geoStatus').textContent = CRS_DEF ? 'Georef set ✓' : 'Georef set (no CRS)';
+  }
+  $('#applyGeo').addEventListener('click', setGeorefFromUI);
+
+  function localToLonLatHeight(vLocal){
+    const v = vLocal.clone().applyMatrix4(M_LOCAL_TO_CRS);
+    if (!CRS_DEF) return { lon: null, lat: null, h: v.z };
+    try { const [lon,lat] = proj4('LOCAL_CRS','WGS84',[v.x, v.y]); return { lon, lat, h: v.z }; }
+    catch { return { lon: null, lat: null, h: v.z }; }
+  }
+
+  const propBody = document.getElementById('propBody');
+  let PICK_A = null, PICK_B = null;
+  const relLabel = document.getElementById('relLabel');
+  function meshAtPointer(ev){
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObject(modelGroup, true);
+    return hits[0] || null;
+  }
+  canvas.addEventListener('pointerdown', (ev)=>{
+    const hit = meshAtPointer(ev); if (!hit) return;
+    currentIntersect = hit; const m = hit.object; highlight(m); showPropertiesForMesh(m); dropMarkerAtHit(hit);
+  });
+  document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape') { clearHighlight(); propBody.innerHTML = ''; } });
+
+  function showPropertiesForMesh(mesh){
+    propBody.innerHTML = '';
+    const rows = [];
+    const guid = mesh.userData.guid || null; // from semantics.json mapping if you add it later
+    rows.push(['Mesh Name', mesh.name||'(unnamed)']);
+    if (guid && SEM_INDEX.has(guid)){
+      const rec = SEM_INDEX.get(guid);
+      rows.push(['GUID', guid]);
+      rows.push(['Type', rec.type||'']);
+      rows.push(['Name', rec.name||'']);
+      const psets = rec.psets||{};
+      for (const [psName, kv] of Object.entries(psets)){
+        const line = Object.entries(kv).map(([k,v])=>`${k}: ${v}`).join(', ');
+        rows.push([psName, line]);
+      }
+    }
+    rows.forEach(([k,v])=>{
+      const div = document.createElement('div');
+      div.className='row';
+      div.innerHTML = `<label>${k}</label><div class="tiny">${(v??'').toString().replaceAll('<','&lt;')}</div>`;
+      propBody.appendChild(div);
+    });
+  }
+
+  let lastHighlightBox = null;
+  function highlight(mesh){ if (lastHighlightBox){ lastHighlightBox.parent?.remove(lastHighlightBox); lastHighlightBox = null; } const box = new THREE.BoxHelper(mesh, 0x22c55e); lastHighlightBox = box; mesh.add(box); }
+  function clearHighlight(){ if (lastHighlightBox){ lastHighlightBox.parent?.remove(lastHighlightBox); lastHighlightBox=null; } }
+
+  function aabbIntersects(meshA, meshB){ meshA.geometry.computeBoundingBox(); meshB.geometry.computeBoundingBox(); const ba = meshA.geometry.boundingBox.clone().applyMatrix4(meshA.matrixWorld); const bb = meshB.geometry.boundingBox.clone().applyMatrix4(meshB.matrixWorld); return ba.intersectsBox(bb); }
+  function meshesOverlapBVH(meshA, meshB){ let hit=false; MeshBVH.intersectsGeometry(meshA.geometry.boundsTree, meshA.geometry, meshA.matrixWorld, meshB.geometry.boundsTree, meshB.geometry, meshB.matrixWorld, ()=>{ hit=true; return true; }); return hit; }
+  function meshesTouchBVH(meshA, meshB){ let touch=false, cut=false; MeshBVH.intersectsGeometry(meshA.geometry.boundsTree, meshA.geometry, meshA.matrixWorld, meshB.geometry.boundsTree, meshB.geometry, meshB.matrixWorld, (triA, triB)=>{ const cop = Math.abs(triA.normal.dot(triB.normal))>0.999; if(cop){ touch=true; } else { cut=true; return true; } }); return touch && !cut; }
+  function isInside(meshA, meshB){ const box = new THREE.Box3().setFromObject(meshA); const c = box.getCenter(new THREE.Vector3()); const dir = new THREE.Vector3(1,0,0); let count=0; const eps=0.01; const offs=[[0,0,0],[0,eps,0],[0,-eps,0],[0,0,eps],[0,0,-eps]]; for(const o of offs){ const origin = c.clone().add(new THREE.Vector3(0,o[1],o[2])); const rc = new THREE.Raycaster(origin, dir, 0, 1e7); const it = rc.intersectObject(meshB, true); count += it.length; } return (count%2)===1; }
+  function relate(A,B){ if(!A||!B) return 'select A & B'; if(!aabbIntersects(A,B)) return 'disjoint'; if (meshesOverlapBVH(A,B)) return 'overlap'; if (meshesTouchBVH(A,B)) return 'touch'; const aInb = isInside(A,B); const bIna = isInside(B,A); if(aInb && !bIna) return 'inside(A,B)'; if(bIna && !aInb) return 'inside(B,A)'; if(aInb && bIna)  return 'equal/cover'; return 'disjoint'; }
+
+  $('#pickA').addEventListener('click', ()=>{ if(currentIntersect){ window.PICK_A = currentIntersect.object; relLabel.textContent = 'A set ✓'; }});
+  $('#pickB').addEventListener('click', ()=>{ if(currentIntersect){ window.PICK_B = currentIntersect.object; relLabel.textContent = 'B set ✓'; }});
+  $('#relate').addEventListener('click', ()=>{ const r = relate(window.PICK_A,window.PICK_B); relLabel.textContent = r; });
+
+  // Leaflet integration booted by external script
+  window.__LEAFLET_BOOT = ()=>{
+    const map = L.map('map', { zoomControl:true, center:[-7.978,112.631], zoom:15 });
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+    const esri = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, attribution: 'Tiles © Esri, Maxar' });
+    const markers = L.layerGroup().addTo(map);
+    setDiag(`🧪 Booted • Three: r${THREE.REVISION} • Map: on`);
+
+    const basemapSel = document.getElementById('basemap');
+    basemapSel.addEventListener('change', ()=>{ if (basemapSel.value === 'osm') { map.addLayer(osm); map.removeLayer(esri); } else { map.addLayer(esri); map.removeLayer(osm); } });
+
+    document.getElementById('linkCam').addEventListener('click', ()=>{ const world = new THREE.Vector3().copy(controls.target); const {lon,lat} = localToLonLatHeight(world); if (lon!=null && lat!=null) map.flyTo([lat, lon], 18); });
+    document.getElementById('flyToMarker').addEventListener('click', ()=>{ const layers = markers.getLayers(); if(!layers.length) return; const m = layers[0]; map.flyTo(m.getLatLng(), 19); });
+    window.__dropMarkerAt = (lon,lat,h)=>{ markers.clearLayers(); const m = L.marker([lat, lon]).addTo(markers); m.bindPopup(`<b>Picked point</b><br>Lon: ${lon.toFixed(6)}<br>Lat: ${lat.toFixed(6)}<br>H: ${h.toFixed(2)} m`).openPopup(); };
+    window.__map = map;
+  };
+
+  function dropMarkerAtHit(hit){ const p = hit.point.clone(); const { lon, lat, h } = localToLonLatHeight(p); if (lon==null || lat==null){ alert('No CRS defined. Set georeference first.'); return; } if(window.__dropMarkerAt) window.__dropMarkerAt(lon,lat,h); }
+
+  function render(){ renderer.render(scene, camera); requestAnimationFrame(render); }
+  render();
+  window.addEventListener('resize', ()=>{ camera.aspect = canvas.clientWidth/canvas.clientHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight-48); });
+
+  // Auto-load /assets/model.glb if present (GitHub Pages friendly)
+  fetch('./assets/model.glb', {method:'HEAD'}).then(r=>{ if(r.ok) loadAll('./assets/model.glb','./assets/semantics.json','./assets/georef.json'); });
+
+  // ---------------- Self-tests (basic runtime checks) ----------------
+  function selfTest(){
+    const results = [];
+    try{ results.push(['THREE import', !!THREE.Scene]); }catch(e){ results.push(['THREE import', false]); }
+    try{ const g = new THREE.BoxGeometry(1,1,1); const m = new THREE.MeshBasicMaterial(); const mesh = new THREE.Mesh(g,m); scene.add(mesh); scene.remove(mesh); results.push(['Basic three usage', true]); }catch(e){ results.push(['Basic three usage', false]); }
+    try{ results.push(['BVH plugin', !!MeshBVH]); }catch(e){ results.push(['BVH plugin', false]); }
+    try{ results.push(['proj4', typeof proj4 === 'function' || typeof proj4 === 'object']); }catch(e){ results.push(['proj4', false]); }
+    const mapOk = !!window.__map; results.push(['Leaflet map', mapOk]);
+    const txt = '🧪 Tests • ' + results.map(([k,v])=>`${k}:${v?'✓':'✗'}`).join(' • ');
+    setDiag(txt);
+    console.log('Self‑test results', results);
+  }
+  document.getElementById('runTests').addEventListener('click', selfTest);
+</script>
+
+<!-- Leaflet JS last -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" onload="window.__LEAFLET_BOOT && window.__LEAFLET_BOOT()"></script>
 </body>
 </html>
